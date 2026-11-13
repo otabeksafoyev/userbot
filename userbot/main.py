@@ -14,6 +14,7 @@ from data import config
 
 from . import storage
 from .login_bot import router
+from .targets_bot import router as targets_router
 from .runtime import rt
 from .watcher import start_watcher, worker
 
@@ -37,6 +38,7 @@ async def main() -> None:
             await storage.clear_login()
 
     dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(targets_router)   # login_bot dagi umumiy matn handlerdan OLDIN bo'lishi shart
     dp.include_router(router)
     asyncio.create_task(worker())
     await dp.start_polling(rt.login_bot)

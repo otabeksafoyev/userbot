@@ -62,7 +62,7 @@ async def start(msg: Message, state: FSMContext):
     await state.clear()
     if await storage.load_login():
         return await msg.answer(
-            f"{DIV}\n◈ <b>Userbot ulangan.</b>\n\n/status — holat\n/watch — kuzatiladigan kanalni o'zgartirish\n/logout — uzish\n{DIV}",
+            f"{DIV}\n◈ <b>Userbot ulangan.</b>\n\n/status — holat\n/watch — kuzatiladigan kanalni o'zgartirish\n/targets — nishon botlar va foizlar\n/logout — uzish\n{DIV}",
             parse_mode="HTML")
     await state.set_state(Login.api_id)
     await msg.answer(

@@ -15,6 +15,7 @@ _K_SESSION = "userbot:session"
 _K_CREDS = "userbot:creds"
 _K_WATCH = "userbot:watch"
 _K_DONE = "userbot:done"
+_K_TARGETS = "userbot:targets"
 
 
 def _fernet() -> Fernet:
@@ -86,3 +87,23 @@ async def mark_done(chat_id: int, msg_id: int) -> None:
     v = json.loads(await _get(_K_DONE) or "[]")
     v.append(f"{chat_id}:{msg_id}")
     await _set(_K_DONE, json.dumps(v[-500:]))
+
+
+# ── Nishon botlar (Kaworai / Yumora ...) ─────────────────────────────────────
+# Har biri: {"id","kind","name","min_percent","enabled", ["secret" (Fernet), "bot_username"]}
+# Bo'sh ro'yxat = eski (bitta Kaworai, admin tasdig'i bilan) rejim.
+def seal(data: dict) -> str:
+    return _fernet().encrypt(json.dumps(data).encode()).decode()
+
+
+def unseal(token: str) -> dict:
+    return json.loads(_fernet().decrypt(token.encode()))
+
+
+async def load_targets() -> list[dict]:
+    v = await _get(_K_TARGETS)
+    return json.loads(v) if v else []
+
+
+async def save_targets(items: list[dict]) -> None:
+    await _set(_K_TARGETS, json.dumps(items))

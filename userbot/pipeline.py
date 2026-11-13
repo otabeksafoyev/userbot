@@ -15,8 +15,9 @@ from database.models import Anime, Series
 from utils.ai_anime import build_content_info
 from utils.security import esc
 
-from . import storage
+from . import storage, targets
 from .parsers import ENG_RE, clean_line, parse_post, same_title
+from .scoring import breakdown_text, match_percent
 from .runtime import rt
 from .source import fetch_from_source
 
@@ -176,6 +177,11 @@ async def process_post(client, msg, cfg: dict) -> None:
         await client.download_media(msg, file=buf)
         poster = buf.getvalue() or None
 
+    # Avtomatik rejim (/targets): bir nechta nishon bot, moslik foizi bo'yicha. Nishon yo'q bo'lsa — eski rejim.
+    tcfgs = await targets.load_targets()
+    if tcfgs:
+        return await _process_multi(client, msg, tcfgs, title, code, eng, ctype, info_text, episodes, poster)
+
     # 4) AI ma'lumot + tasdiq (nom noto'g'ri bo'lsa "boshqa nom bilan" qayta urinadi)
     for _ in range(3):
         info = await _ai_info(eng, ctype)
@@ -209,3 +215,57 @@ async def process_post(client, msg, cfg: dict) -> None:
     async with AsyncSessionLocal() as s:
         saved = (await s.execute(select(func.count(Series.id)).where(Series.anime_id == anime_id))).scalar() or 0
     await rt.notify(f"✓ Tayyor: <b>{esc(title)}</b>\n๏ Yuborildi: {sent}/{len(episodes)}  •  Bazada: {saved}")
+
+
+# ═══════════ Avtomatik rejim: moslik foizi → mos nishon botlarga ═══════════
+async def _deliver(t, client, title: str, ctype: str, info: dict, episodes: dict, poster: bytes | None) -> str:
+    """Bitta nishonga: yangi anime yoki faqat yangi qismlar + news. Adminga qisqa natija qatori qaytaradi."""
+    try:
+        aid = await t.find_existing(title)
+        if aid is None:
+            is_new, new_eps = True, episodes
+            aid = await t.create(title, ctype, info, len(episodes), poster)
+        else:
+            is_new = False
+            last = await t.max_episode(aid)
+            new_eps = targets.new_episodes(episodes, last)
+            if not new_eps:
+                return f"= {esc(t.name)}: «{esc(title)}» bor (ID {aid}), yangi qism yo'q ({last}-qismgacha bor)"
+        sent, saved = await t.upload(client, aid, ctype, new_eps)
+        if saved <= 0:
+            return f"! {esc(t.name)}: ID {aid} — qismlar qabul qilinmadi (yuborildi {sent}/{len(new_eps)}). Kanal/admin huquqini tekshiring."
+        news = await t.news(aid, ctype, sorted(new_eps), is_new)
+        what = "yangi anime" if is_new else f"yangi qism: {targets.range_text(list(new_eps))}"
+        return f"✓ {esc(t.name)}: {what} • ID {aid} • qabul: {saved}/{len(new_eps)} • news: {news} ta kanal"
+    except Exception as e:
+        logger.exception("nishon %s xato", t.name)
+        return f"✕ {esc(t.name)}: xato ({esc(type(e).__name__)})"
+
+
+async def _process_multi(client, msg, tcfgs: list[dict], title: str, code: str, eng: str, ctype: str,
+                         info_text: str, episodes: dict, poster: bytes | None) -> None:
+    ts = [t for t in (targets.make(c) for c in tcfgs if c.get("enabled", True)) if t.accepts(ctype)]
+    if not ts:
+        return await rt.notify(f"✕ «{esc(title)}» ({esc(ctype)}) uchun yoqilgan nishon bot yo'q — qo'shilmadi.")
+
+    info = await _ai_info(eng, ctype)
+    if _missing(info):
+        return await rt.notify(
+            f"✕ <b>{esc(title)}</b>: AI ma'lumoti to'liq emas ({esc(', '.join(_missing(info)))}) — hech qaysi botga qo'shilmadi.")
+
+    pct, parts = match_percent(title, eng, f"{msg.message or ''}\n{info_text}", info)
+    ok_ts = [t for t in ts if pct >= t.min_percent]
+    lines = [f"◈ <b>{esc(title)}</b> — moslik <b>{pct}%</b>", f"≡ {esc(breakdown_text(parts))}"]
+    if info.get("note"):
+        lines.append(f"! AI: {esc(info['note'])}")
+    lines += [f"✕ {esc(t.name)}: {pct}% < {t.min_percent}% — qo'shilmadi" for t in ts if t not in ok_ts]
+    if not ok_ts:
+        return await rt.notify("\n".join(lines))
+    await rt.notify("\n".join(lines) + "\n◌ Qo'shilyapti...")
+
+    results = []
+    for t in ok_ts:
+        results.append(await _deliver(t, client, title, ctype, info, episodes, poster))
+    if any(r.startswith(("✓", "=")) for r in results):
+        await storage.mark_done(msg.chat_id, msg.id)
+    await rt.notify(f"◈ <b>{esc(title)}</b> — natija:\n" + "\n".join(results))
